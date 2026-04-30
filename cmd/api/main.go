@@ -3,6 +3,7 @@ package main
 import (
 	"async-event-rest/internal/api/handler"
 	"async-event-rest/internal/repository/postgres"
+	repoRedis "async-event-rest/internal/repository/redis"
 	"log"
 	"net/http"
 )
@@ -10,13 +11,19 @@ import (
 func main() {
 	connStr := "host=localhost port=5432 user=postgres password=secret dbname=events_db sslmode=disable"
 
-	repo, err := postgres.New(connStr)
+	db, err := postgres.New(connStr)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	log.Println("Connected to PostgreSQL successfully!")
 
-	h := handler.New(repo)
+	cache, err := repoRedis.New("localhost:6379")
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis.")
+	}
+	log.Println("Connected to Redis successfully!")
+
+	h := handler.New(db, cache)
 
 	mux := http.NewServeMux()
 

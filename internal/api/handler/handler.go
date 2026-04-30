@@ -3,17 +3,20 @@ package handler
 import (
 	"async-event-rest/internal/models"
 	"async-event-rest/internal/repository/postgres"
+	repoRedis "async-event-rest/internal/repository/redis"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 )
 
 type Handler struct {
-	repo *postgres.Repository
+	db    *postgres.Repository
+	cache *repoRedis.Repository
 }
 
-func New(repo *postgres.Repository) *Handler {
-	return &Handler{repo: repo}
+func New(repo *postgres.Repository, cache *repoRedis.Repository) *Handler {
+	return &Handler{db: repo, cache: cache}
 }
 
 func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
@@ -29,14 +32,18 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.repo.SaveEvent(event); err != nil {
+	if err := h.db.SaveEvent(event); err != nil {
 		http.Error(w, "Failed to save event", http.StatusInternalServerError)
 		return
 	}
 
-	if err := h.repo.UpdateStats(event.UserID, event.Type); err != nil {
+	if err := h.db.UpdateStats(event.UserID, event.Type); err != nil {
 		http.Error(w, "Failed to update stats", http.StatusInternalServerError)
 		return
+	}
+
+	if err := h.cache.InvalidateCache(r.Context(), event.UserID); err != nil {
+		log.Printf("Failed to clear cache of uID: %d: %v", event.UserID, err)
 	}
 
 	w.WriteHeader(http.StatusCreated)
@@ -61,15 +68,25 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats, err := h.repo.GetStats(userID)
-	if err != nil {
-		http.Error(w, "Stats not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "application/json")
+
+	stats, err := h.cache.GetStats(r.Context(), userID)
+	if err == nil {
+		log.Println("Cache used!!!")
+		json.NewEncoder(w).Encode(stats)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(stats); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	stats, err = h.db.GetStats(userID)
+	if err != nil {
+		http.Error(w, "Stats not found in PostgreSQL", http.StatusNotFound)
 		return
 	}
+
+	if err := h.cache.SetStats(r.Context(), userID, stats); err != nil {
+		log.Printf("Failed to save cache for uID: %d: %v", userID, err)
+	}
+
+	log.Println("Cache was not used!!!")
+	json.NewEncoder(w).Encode(stats)
 }
