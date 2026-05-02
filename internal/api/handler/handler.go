@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"async-event-rest/internal/kafka/producer"
 	"async-event-rest/internal/models"
 	"async-event-rest/internal/repository/postgres"
 	repoRedis "async-event-rest/internal/repository/redis"
@@ -8,15 +9,17 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 type Handler struct {
-	db    *postgres.Repository
-	cache *repoRedis.Repository
+	db       *postgres.Repository
+	cache    *repoRedis.Repository
+	producer *producer.Producer
 }
 
-func New(repo *postgres.Repository, cache *repoRedis.Repository) *Handler {
-	return &Handler{db: repo, cache: cache}
+func New(repo *postgres.Repository, cache *repoRedis.Repository, p *producer.Producer) *Handler {
+	return &Handler{db: repo, cache: cache, producer: p}
 }
 
 func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
@@ -32,18 +35,25 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.SaveEvent(event); err != nil {
-		http.Error(w, "Failed to save event", http.StatusInternalServerError)
-		return
-	}
+	event.CreatedAt = time.Now()
 
-	if err := h.db.UpdateStats(event.UserID, event.Type); err != nil {
-		http.Error(w, "Failed to update stats", http.StatusInternalServerError)
-		return
-	}
+	// if err := h.db.SaveEvent(event); err != nil {
+	// 	http.Error(w, "Failed to save event", http.StatusInternalServerError)
+	// 	return
+	// }
 
-	if err := h.cache.InvalidateCache(r.Context(), event.UserID); err != nil {
-		log.Printf("Failed to clear cache of uID: %d: %v", event.UserID, err)
+	// if err := h.db.UpdateStats(event.UserID, event.Type); err != nil {
+	// 	http.Error(w, "Failed to update stats", http.StatusInternalServerError)
+	// 	return
+	// }
+
+	// if err := h.cache.InvalidateCache(r.Context(), event.UserID); err != nil {
+	// 	log.Printf("Failed to clear cache of uID: %d: %v", event.UserID, err)
+	// }
+
+	if err := h.producer.ProduceEvent(r.Context(), event); err != nil {
+		http.Error(w, "Failed to produce event to Kafka", http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusCreated)

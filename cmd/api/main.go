@@ -2,6 +2,7 @@ package main
 
 import (
 	"async-event-rest/internal/api/handler"
+	"async-event-rest/internal/kafka/producer"
 	"async-event-rest/internal/repository/postgres"
 	repoRedis "async-event-rest/internal/repository/redis"
 	"log"
@@ -23,7 +24,11 @@ func main() {
 	}
 	log.Println("Connected to Redis successfully!")
 
-	h := handler.New(db, cache)
+	kafkaProducer := producer.New("127.0.0.1:9092", "user-events")
+	defer kafkaProducer.Close()
+	log.Println("Connected to Kafka(producer) successfully!")
+
+	h := handler.New(db, cache, kafkaProducer)
 
 	mux := http.NewServeMux()
 
