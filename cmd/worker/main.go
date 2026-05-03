@@ -8,7 +8,38 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+
+	"github.com/segmentio/kafka-go"
 )
+
+func worker(id int, jobs <-chan kafka.Message, db *postgres.Repository, cache *repoRedis.Repository) {
+	for msg := range jobs {
+		var event models.Event
+		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			log.Printf("[Worker %d] Error unmarshaling JSON: %v", id, err)
+			continue
+		}
+
+		log.Printf("[Worker %d] Started processing UserID=%d, Type=%s", id, event.UserID, event.Type)
+
+		if err := db.SaveEvent(event); err != nil {
+			log.Printf("[Worker %d] Failed to save event: %v", id, err)
+			continue
+		}
+
+		if err := db.UpdateStats(event.UserID, event.Type); err != nil {
+			log.Printf("[Worker %d] Failed to update stats: %v", id, err)
+			continue
+		}
+
+		if err := cache.InvalidateCache(context.Background(), event.UserID); err != nil {
+			log.Printf("[Worker %d] Failed to invalidate cache: %v", id, err)
+			continue
+		}
+
+		log.Printf("[Worker %d] Finished processing UserID=%d", id, event.UserID)
+	}
+}
 
 func main() {
 	connStr := "host=localhost port=5432 user=postgres password=secret dbname=events_db sslmode=disable"
@@ -27,7 +58,14 @@ func main() {
 
 	kafkaConsumer := consumer.New("127.0.0.1:9092", "user-events", "worker-group")
 	defer kafkaConsumer.Close()
-	log.Println("Connected to Kafka(consumer) successfully!")
+	log.Println("Connected to Kafka(consumer) successfully! Starting workers..")
+
+	jobs := make(chan kafka.Message, 100)
+
+	numWorkers := 5
+	for w := 1; w <= numWorkers; w++ {
+		go worker(w, jobs, db, cache)
+	}
 
 	for {
 		msg, err := kafkaConsumer.ReadMessage(context.Background())
@@ -36,29 +74,7 @@ func main() {
 			continue
 		}
 
-		var event models.Event
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			log.Printf("Error unmarshaling JSON: %v", err)
-			continue
-		}
+		jobs <- msg
 
-		log.Printf("Received event from Kafka: UserID=%d, Type=%s", event.UserID, event.Type)
-
-		if err := db.SaveEvent(event); err != nil {
-			log.Printf("Failed to save event to DB: %v", err)
-			continue
-		}
-
-		if err := db.UpdateStats(event.UserID, event.Type); err != nil {
-			log.Printf("Failed to update stats: %v", err)
-			continue
-		}
-
-		if err := cache.InvalidateCache(context.Background(), event.UserID); err != nil {
-			log.Printf("Failed to invalidate cache: %v", err)
-			continue
-		}
-
-		log.Printf("Successfully processed event for UserID=%d\n", event.UserID)
 	}
 }
